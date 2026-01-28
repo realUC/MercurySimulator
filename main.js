@@ -1158,6 +1158,9 @@ window.play = function () {
   pendingSeClockTrigger = seClockTrigger.filter(i => i > currentTs)
   seContext.resume()
   gain.gain.value = se_volume.value / 100
+  if (window.gameState) {
+    window.gameState.reset()
+  }
 }
 window.pause = function () {
   if (bgmBufSrc != null) {
@@ -1178,6 +1181,9 @@ window.stop = function () {
   drawForNextFrame = true
   sflOffset = 0
   sfl = 1
+  if (window.gameState) {
+    window.gameState.reset()
+  }
 }
 window.setPlaybackTime = function (time = 0) {
   currentTs = Math.round(time * 1000)
@@ -1567,5 +1573,409 @@ bgmCtr.addEventListener('play', play)
 bgmCtr.addEventListener('volumeChange', v => {
   bgmGain.gain.value = v
 })
+
+window.gameState = {
+  score: 0,
+  combo: 0,
+  maxCombo: 0,
+  perfect: 0,
+  good: 0,
+  miss: 0,
+  hitNotes: new Set(),
+  activeHolds: new Map(),
+  gameEnded: false,
+  endOfChartTime: 0,
+  showResult: false,
+  
+  JUDGE_WINDOW: {
+    PERFECT: 50,
+    GOOD: 100,
+    MISS: 150
+  },
+  
+  SCORE: {
+    PERFECT: 100,
+    GOOD: 50,
+    MISS: 0
+  },
+  
+  reset() {
+    this.score = 0
+    this.combo = 0
+    this.maxCombo = 0
+    this.perfect = 0
+    this.good = 0
+    this.miss = 0
+    this.hitNotes.clear()
+    this.activeHolds.clear()
+    this.gameEnded = false
+    this.endOfChartTime = 0
+    this.showResult = false
+  },
+  
+  checkNoteHit(touchData) {
+    if (this.gameEnded || this.showResult) return
+    
+    const now = performance.now()
+    const currentTime = currentTs
+    
+    for (let i = 0; i < noteListForPlayback.length; i++) {
+      const note = noteListForPlayback[i]
+      
+      if (this.hitNotes.has(note.id)) continue
+      if (note.noteType === '14') {
+        if (!this.gameEnded) {
+          this.gameEnded = true
+          this.endOfChartTime = now
+        }
+        continue
+      }
+      
+      const timeDiff = Math.abs(currentTime - note.timestamp)
+      
+      if (timeDiff > this.JUDGE_WINDOW.MISS) continue
+      
+      if (this.isTouchingNote(touchData, note)) {
+        if (this.canHitNote(note, touchData)) {
+          this.hitNote(note, touchData, timeDiff)
+          return
+        }
+      }
+    }
+  },
+  
+  isTouchingNote(touchData, note) {
+    const touchLane = touchData.lane
+    const noteLane = note.laneOffset
+    const noteWidth = note.noteWidth || 1
+    
+    if (noteWidth >= 60) return true
+    
+    const startLane = (60 - noteLane - noteWidth) % 60
+    const endLane = (60 - noteLane) % 60
+    
+    if (startLane < endLane) {
+      return touchLane >= startLane && touchLane < endLane
+    } else {
+      return touchLane >= startLane || touchLane < endLane
+    }
+  },
+  
+  canHitNote(note, touchData) {
+    const noteType = note.noteType
+    
+    if (noteType === '1' || noteType === '2' || noteType === '20') {
+      return touchData.phase === 'start'
+    }
+    
+    if (noteType === '3' || noteType === '21') {
+      if (touchData.phase === 'start' || touchData.phase === 'move') {
+        const touchHistory = touchControl.touchHistory.get(touchData.id)
+        if (touchHistory && touchHistory.history.length >= 2) {
+          const prevDist = touchHistory.history[touchHistory.history.length - 2]
+          const currentDist = touchHistory.history[touchHistory.history.length - 1]
+          const prevDistance = Math.sqrt(
+            Math.pow(prevDist.x - canvas.width/2, 2) + 
+            Math.pow(prevDist.y - canvas.height/2, 2)
+          )
+          const currentDistance = Math.sqrt(
+            Math.pow(currentDist.x - canvas.width/2, 2) + 
+            Math.pow(currentDist.y - canvas.height/2, 2)
+          )
+          return currentDistance < prevDistance
+        }
+        return true
+      }
+      return false
+    }
+    
+    if (noteType === '4' || noteType === '22') {
+      if (touchData.phase === 'start' || touchData.phase === 'move') {
+        const touchHistory = touchControl.touchHistory.get(touchData.id)
+        if (touchHistory && touchHistory.history.length >= 2) {
+          const prevDist = touchHistory.history[touchHistory.history.length - 2]
+          const currentDist = touchHistory.history[touchHistory.history.length - 1]
+          const prevDistance = Math.sqrt(
+            Math.pow(prevDist.x - canvas.width/2, 2) + 
+            Math.pow(prevDist.y - canvas.height/2, 2)
+          )
+          const currentDistance = Math.sqrt(
+            Math.pow(currentDist.x - canvas.width/2, 2) + 
+            Math.pow(currentDist.y - canvas.height/2, 2)
+          )
+          return currentDistance > prevDistance
+        }
+        return true
+      }
+      return false
+    }
+    
+    if (noteType === '5' || noteType === '6' || noteType === '23') {
+      if (touchData.phase === 'end' && touchData.flickDirection) {
+        return touchData.flickDirection === 'left'
+      }
+      return false
+    }
+    
+    if (noteType === '7' || noteType === '8' || noteType === '24') {
+      if (touchData.phase === 'end' && touchData.flickDirection) {
+        return touchData.flickDirection === 'right'
+      }
+      return false
+    }
+    
+    if (noteType === '9' || noteType === '25') {
+      if (touchData.phase === 'start') {
+        this.activeHolds.set(note.id, {
+          note: note,
+          touchId: touchData.id,
+          startTime: performance.now()
+        })
+        return true
+      }
+      return false
+    }
+    
+    if (noteType === '16' || noteType === '26') {
+      return touchData.phase === 'start'
+    }
+    
+    return false
+  },
+  
+  hitNote(note, touchData, timeDiff) {
+    let judge = 'MISS'
+    
+    if (timeDiff <= this.JUDGE_WINDOW.PERFECT) {
+      judge = 'PERFECT'
+      this.perfect++
+      this.score += this.SCORE.PERFECT
+    } else if (timeDiff <= this.JUDGE_WINDOW.GOOD) {
+      judge = 'GOOD'
+      this.good++
+      this.score += this.SCORE.GOOD
+    } else {
+      judge = 'MISS'
+      this.miss++
+      this.combo = 0
+    }
+    
+    if (judge !== 'MISS') {
+      this.combo++
+      if (this.combo > this.maxCombo) {
+        this.maxCombo = this.combo
+      }
+    }
+    
+    this.hitNotes.add(note.id)
+    
+    this.showJudgeEffect(judge)
+  },
+  
+  updateHolds() {
+    if (this.gameEnded || this.showResult) return
+    
+    const now = performance.now()
+    const currentTime = currentTs
+    
+    for (const [holdId, holdData] of this.activeHolds) {
+      const note = holdData.note
+      const touchId = holdData.touchId
+      
+      if (!touchControl.touches.has(touchId)) {
+        this.activeHolds.delete(holdId)
+        this.miss++
+        this.combo = 0
+        continue
+      }
+      
+      const touchData = touchControl.touches.get(touchId)
+      if (!this.isTouchingNote(touchData, note)) {
+        this.activeHolds.delete(holdId)
+        this.miss++
+        this.combo = 0
+        continue
+      }
+      
+      const timeDiff = Math.abs(currentTime - note.timestamp)
+      if (timeDiff > this.JUDGE_WINDOW.MISS) {
+        this.activeHolds.delete(holdId)
+        this.miss++
+        this.combo = 0
+      }
+    }
+  },
+  
+  checkMissedNotes() {
+    if (this.gameEnded || this.showResult) return
+    
+    const currentTime = currentTs
+    
+    for (let i = 0; i < noteListForPlayback.length; i++) {
+      const note = noteListForPlayback[i]
+      
+      if (this.hitNotes.has(note.id)) continue
+      if (note.noteType === '14') continue
+      if (note.noteType === '10' || note.noteType === '11') continue
+      
+      const timeDiff = currentTime - note.timestamp
+      
+      if (timeDiff > this.JUDGE_WINDOW.MISS) {
+        if (!this.activeHolds.has(note.id)) {
+          this.hitNotes.add(note.id)
+          this.miss++
+          this.combo = 0
+        }
+      }
+    }
+  },
+  
+  showJudgeEffect(judge) {
+    const centerX = canvas.width / 2
+    const centerY = canvas.height / 2
+    
+    ctx.save()
+    ctx.font = `bold ${48 * displayRatio}px Arial`
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    
+    if (judge === 'PERFECT') {
+      ctx.fillStyle = 'rgb(255, 215, 0)'
+    } else if (judge === 'GOOD') {
+      ctx.fillStyle = 'rgb(100, 200, 255)'
+    } else {
+      ctx.fillStyle = 'rgb(255, 100, 100)'
+    }
+    
+    ctx.fillText(judge, centerX, centerY + maxR * 0.3)
+    ctx.restore()
+  },
+  
+  drawCombo() {
+    if (this.combo < 2) return
+    
+    const centerX = canvas.width / 2
+    const centerY = canvas.height / 2
+    
+    ctx.save()
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    
+    const comboText = this.combo.toString()
+    const fontSize = Math.min(80 * displayRatio, 120)
+    
+    ctx.font = `bold ${fontSize}px Arial`
+    ctx.fillStyle = 'white'
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+    ctx.shadowBlur = 10
+    ctx.fillText(comboText, centerX, centerY - maxR * 0.2)
+    
+    ctx.font = `${fontSize * 0.3}px Arial`
+    ctx.fillText('COMBO', centerX, centerY - maxR * 0.2 + fontSize * 0.5)
+    
+    ctx.restore()
+  },
+  
+  drawScore() {
+    const centerX = canvas.width / 2
+    const centerY = canvas.height / 2
+    
+    ctx.save()
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    
+    const scoreText = this.score.toString().padStart(8, '0')
+    const fontSize = 36 * displayRatio
+    
+    ctx.font = `bold ${fontSize}px Arial`
+    ctx.fillStyle = 'white'
+    ctx.shadowColor = 'rgba(0, 0, 0, 0.8)'
+    ctx.shadowBlur = 8
+    ctx.fillText(scoreText, centerX, centerY - maxR * 0.5)
+    
+    ctx.restore()
+  },
+  
+  drawAllCombo() {
+    if (this.miss > 0 || this.combo < 10) return
+    
+    const centerX = canvas.width / 2
+    const centerY = canvas.height / 2
+    
+    ctx.save()
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    
+    const fontSize = 40 * displayRatio
+    
+    ctx.font = `bold ${fontSize}px Arial`
+    ctx.fillStyle = 'rgb(255, 215, 0)'
+    ctx.shadowColor = 'rgba(255, 215, 0, 0.8)'
+    ctx.shadowBlur = 15
+    ctx.fillText('ALL COMBO', centerX, centerY - maxR * 0.35)
+    
+    ctx.restore()
+  },
+  
+  checkGameEnd() {
+    if (!this.gameEnded) return
+    
+    const now = performance.now()
+    const timeSinceEnd = now - this.endOfChartTime
+    
+    if (timeSinceEnd >= 5000 && !this.showResult) {
+      this.showResult = true
+      this.showResultScreen()
+    }
+  },
+  
+  showResultScreen() {
+    const resultDiv = document.getElementById('result_screen')
+    if (!resultDiv) return
+    
+    const allCombo = this.miss === 0 ? 'ALL COMBO!' : ''
+    
+    resultDiv.innerHTML = `
+      <div class="result-content">
+        <h1>RESULT</h1>
+        <div class="result-score">${this.score}</div>
+        <div class="result-combo">Max Combo: ${this.maxCombo}</div>
+        <div class="result-allcombo">${allCombo}</div>
+        <div class="result-stats">
+          <div>Perfect: ${this.perfect}</div>
+          <div>Good: ${this.good}</div>
+          <div>Miss: ${this.miss}</div>
+        </div>
+        <button onclick="gameState.restart()">REPLAY</button>
+      </div>
+    `
+    
+    resultDiv.style.display = 'flex'
+  },
+  
+  restart() {
+    this.reset()
+    const resultDiv = document.getElementById('result_screen')
+    if (resultDiv) {
+      resultDiv.style.display = 'none'
+    }
+    stop()
+  }
+}
+
+const originalRender = render
+render = function(now) {
+  originalRender(now)
+  
+  if (playing) {
+    gameState.updateHolds()
+    gameState.checkMissedNotes()
+    gameState.checkGameEnd()
+  }
+  
+  gameState.drawCombo()
+  gameState.drawScore()
+  gameState.drawAllCombo()
+}
 
 //})
